@@ -22,9 +22,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class NoWaitInverse {
 
     private int nThreads;
-    private AbstractExecutorService executor;
+    private ForkJoinPool executor;
     private CountDownLatch finished;
-    private RuntimeException exception;
+    private volatile RuntimeException exception;
     private long[][] A;
     private int[] perm;
 
@@ -32,7 +32,7 @@ public class NoWaitInverse {
         nThreads = par;
     }
 
-    class Task implements Runnable {
+    class Task extends ForkJoinTask {
 
         int             idx;
         int             step;
@@ -54,69 +54,85 @@ public class NoWaitInverse {
             state = new AtomicInteger(prev.step == idx ? A.length : step == idx ? 1 : 2);
         }
 
+        @Override
+        public Object getRawResult() {
+            return null;
+        }
+
+        @Override
+        protected void setRawResult(Object value) {
+        }
+
         void send() {
             if (state.decrementAndGet() == 0) {
-                executor.execute(this);
+                fork();
             }
         }
 
-        public void run() {
-            long[] curRow = A[idx];
-            boolean lastTask = step + 1 == A.length;
-            if (step == idx) {
-                // Compute
-                perm[idx] = idx;
-                for (int c = idx; c < A.length; ++c) {
-                    if (curRow[c] != GF.ZERO) {
-                        perm[idx] = c;
-                        break;
+        public boolean exec() {
+            try {
+                long[] curRow = A[idx];
+                boolean lastTask = step + 1 == A.length;
+                if (step == idx) {
+                    // Compute
+                    perm[idx] = idx;
+                    for (int c = idx; c < A.length; ++c) {
+                        if (curRow[c] != GF.ZERO) {
+                            perm[idx] = c;
+                            break;
+                        }
+                    }
+
+                    int colIdx = perm[idx];
+                    long m = GF.rev(curRow[colIdx]);
+                    curRow[colIdx] = curRow[idx];
+                    curRow[idx] = GF.UNIT;
+                    for (int c = 0; c < curRow.length; ++c) {
+                        curRow[c] = GF.mul(curRow[c], m);
+                    }
+
+                    // Notify
+                    Task base = this;
+                    if (!lastTask) {
+                        Task[] next = new Task[A.length];
+                        for (int i = 0; i < next.length; ++i) {
+                            next[i] = new Task(curTasks[i], next);
+                            curTasks[i].nextTask = next[i];
+                        }
+                        base = next[idx];
+                    }
+                    for (Task t : curTasks) {
+                        if (t != this) {
+                            t.baseTask = base;
+                            t.send();
+                        }
+                    }
+                } else {
+                    // Compute
+                    int colIdx = perm[step];
+                    long m = curRow[colIdx];
+                    curRow[colIdx] = curRow[step];
+                    curRow[step] = GF.ZERO;
+                    long[] baseRow = A[baseTask.idx];
+                    for (int c = 0; c < curRow.length; ++c) {
+                        curRow[c] = GF.sub(curRow[c], GF.mul(baseRow[c], m));
+                    }
+
+                    // Notify
+                    if (!lastTask) {
+                        baseTask.send();
+                        nextTask.send();
                     }
                 }
 
-                int colIdx = perm[idx];
-                long m = GF.rev(curRow[colIdx]);
-                curRow[colIdx] = curRow[idx];
-                curRow[idx] = GF.UNIT;
-                for (int c = 0; c < curRow.length; ++c) {
-                    curRow[c] = GF.mul(curRow[c], m);
-                }
-
-                // Notify
-                Task base = this;
-                if (!lastTask) {
-                    Task[] next = new Task[A.length];
-                    for (int i = 0; i < next.length; ++i) {
-                        next[i] = new Task(curTasks[i], next);
-                        curTasks[i].nextTask = next[i];
-                    }
-                    base = next[idx];
-                }
-                for (Task t : curTasks) {
-                    if (t != this) {
-                        t.baseTask = base;
-                        t.send();
-                    }
-                }
+                if (lastTask) finished.countDown();
             }
-            else {
-                // Compute
-                int colIdx = perm[step];
-                long m = curRow[colIdx];
-                curRow[colIdx] = curRow[step];
-                curRow[step] = GF.ZERO;
-                long[] baseRow = A[baseTask.idx];
-                for (int c = 0; c < curRow.length; ++c) {
-                    curRow[c] = GF.sub(curRow[c], GF.mul(baseRow[c], m));
-                }
-
-                // Notify
-                if (!lastTask) {
-                    baseTask.send();
-                    nextTask.send();
-                }
+            catch (Throwable t) {
+                exception = new RuntimeException("ERROR", t);
+                while (finished.getCount() > 0) finished.countDown();
+                return false;
             }
-
-            if (lastTask) finished.countDown();
+            return true;
         }
     }
 
@@ -125,20 +141,12 @@ public class NoWaitInverse {
         finished = new CountDownLatch(A.length);
         perm = new int[A.length];
 
-        executor = new ForkJoinPool(
-                nThreads,
-                ForkJoinPool.defaultForkJoinWorkerThreadFactory,
-                (t, e) -> {
-                    exception = new RuntimeException("ERROR", e);
-                    while (finished.getCount() > 0) finished.countDown();
-                },
-                false);
-
+        executor = new ForkJoinPool(nThreads);
         Task[] tasks = new Task[A.length];
         for (int i = 0; i < A.length; ++i) {
             tasks[i] = new Task(i, tasks);
         }
-        executor.submit(tasks[0]);
+        executor.execute(tasks[0]);
         tasks = null;
 
         try {
