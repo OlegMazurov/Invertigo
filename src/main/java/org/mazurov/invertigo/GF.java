@@ -22,9 +22,9 @@ public class GF {
     public static final long UNIT = 1;              // Galois field unit
 
     private static final long ROOT_4  = 0x13l;          // 2^4 Galois field generator
-    private static final long ROOT_8  = 0x11d;          // 2^8 Galois field generator
-    private static final long ROOT_12 = 0x1053;         // 2^12 Galois field generator
-    private static final long ROOT_16 = 0x1002d;        // 2^16 Galois field generator
+    private static final long ROOT_8  = 0x11dl;          // 2^8 Galois field generator
+    private static final long ROOT_12 = 0x1053l;         // 2^12 Galois field generator
+    private static final long ROOT_16 = 0x1002dl;        // 2^16 Galois field generator
     private static final long ROOT_32 = 0x1000000afl;   // 2^32 Galois field generator
     private static final long ROOT_36 = 0x1000000077l;   // 2^32 Galois field generator
     private static final long ROOT_42 = 0x4000000003fl;   // 2^42 Galois field generator
@@ -78,18 +78,11 @@ public class GF {
         if (b == ZERO) {
             throw new IllegalArgumentException("Division by zero");
         }
-        long m = 1l << MSBIT;
-        long p = b;
-        long vp = a;
-        long q = p;
-        long vq = vp;
-        boolean done = false;
-        while (!done) {
-            done = (q & m) != 0;
-            q <<= 1;
-            vq = (vq << 1) ^ (vq >>> MSBIT) * ROOT;
-        }
-        q ^= ROOT;
+        long p = ROOT;
+        long vp = 0;
+        long q = b;
+        long vq = a;
+        long m = 1l << (MSBIT + 1);
 
         while (p != UNIT) {
             for (;;) {
